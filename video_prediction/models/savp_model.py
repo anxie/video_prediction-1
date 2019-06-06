@@ -177,6 +177,22 @@ class SAVPCell(tf.nn.rnn_cell.RNNCell):
             raise ValueError('Invalid where_add %s' % self.hparams.where_add)
 
         batch_size = inputs['images'].shape[1].value
+
+        np.random.seed(0)
+        self.D = 8
+        assert batch_size % self.D == 0
+        scales = np.random.uniform(low=1, high=5, size=self.D)
+        adim = inputs['actions'].shape[-1].value
+        repeat = batch_size // self.D * adim
+        self.tiled_scales = np.repeat(scales, repeat).reshape((batch_size, adim))
+        print(self.tiled_scales)
+
+        self.zr_dim = 8
+        self.zr_mus = [tf.Variable(tf.zeros([self.zr_dim])) for i in range(self.D)]
+        self.zr_log_sigmas = [tf.Variable(tf.zeros([self.zr_dim])) for i in range(self.D)]
+        self.zrs = [m + tf.random.normal(tf.shape(m)) * tf.exp(s)
+                    for m, s in zip(self.zr_mus, self.zr_log_sigmas)]
+
         image_shape = inputs['images'].shape.as_list()[2:]
         height, width, _ = image_shape
         scale_size = min(height, width)
@@ -414,8 +430,9 @@ class SAVPCell(tf.nn.rnn_cell.RNNCell):
         state_action = []
         state_action_z = []
         if 'actions' in inputs:
-            state_action.append(inputs['actions'])
-            state_action_z.append(inputs['actions'])
+            action = tf.multiply(inputs['actions'], self.tiled_scales)
+            state_action.append(action)
+            state_action_z.append(action)
         if 'states' in inputs:
             state_action.append(state)
             # don't backpropagate the convnet through the state dynamics
