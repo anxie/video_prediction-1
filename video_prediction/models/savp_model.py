@@ -184,10 +184,10 @@ class SAVPCell(tf.nn.rnn_cell.RNNCell):
         self.D = 8
         assert batch_size % self.D == 0
         scales = np.random.uniform(low=1, high=5, size=self.D)
+        print(scales)
         adim = inputs['actions'].shape[-1].value
         repeat = batch_size // self.D * adim
         self.tiled_scales = np.repeat(scales, repeat).reshape((batch_size, adim))
-        print(self.tiled_scales)
 
 
         image_shape = inputs['images'].shape.as_list()[2:]
@@ -427,7 +427,7 @@ class SAVPCell(tf.nn.rnn_cell.RNNCell):
         state_action = []
         state_action_z = []
         if 'actions' in inputs:
-            # action = tf.multiply(inputs['actions'], self.tiled_scales)
+            inputs['actions'] = tf.multiply(inputs['actions'], self.tiled_scales)
             state_action.append(inputs['actions'])
             state_action_z.append(inputs['actions'])
         if 'states' in inputs:

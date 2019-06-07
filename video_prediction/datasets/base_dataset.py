@@ -91,7 +91,7 @@ class BaseVideoDataset(object):
             time_shift=1,
             force_time_shift=False,
             shuffle_on_val=False,
-            use_state=False,
+            use_state=True,
         )
         return hparams
 
