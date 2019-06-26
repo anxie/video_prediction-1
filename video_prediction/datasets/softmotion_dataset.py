@@ -38,7 +38,7 @@ class SoftmotionVideoDataset(VideoDataset):
         self.state_like_names_and_shapes['images'] = '%%d/%s/encoded' % image_name, None
         if self.hparams.use_state:
             self.state_like_names_and_shapes['states'] = '%d/endeffector_pos', (3,)
-            self.action_like_names_and_shapes['actions'] = '%d/action', (4,)
+        self.action_like_names_and_shapes['actions'] = '%d/action', (4,)
         if any([re.search('\d+/object_pos', name) for name in feature.keys()]):
             self.state_like_names_and_shapes['object_pos'] = '%d/object_pos', None  # shape is (2 * num_designated_pixels)
         self._check_or_infer_shapes()
@@ -46,7 +46,7 @@ class SoftmotionVideoDataset(VideoDataset):
     def get_default_hparams_dict(self):
         default_hparams = super(SoftmotionVideoDataset, self).get_default_hparams_dict()
         hparams = dict(
-            context_frames=2,
+            context_frames=1,
             sequence_length=12,
             time_shift=2,
         )

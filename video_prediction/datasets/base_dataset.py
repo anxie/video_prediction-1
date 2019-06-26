@@ -55,6 +55,17 @@ class BaseVideoDataset(object):
 
         self.hparams = self.parse_hparams(hparams_dict, hparams)
 
+        #### ACTION INFERENCE ####
+        print('Scaling Actions')
+        np.random.seed(0); D = 2; adim = 4; batch_size = 16
+        # scales = np.random.uniform(low=-5., high=5., size=[D, adim])
+        # scales[:, 2:] = 1.
+        scales = np.asarray([[1, 1, 1, 1], [-1, -1, 1, 1]])
+
+        repeat = batch_size // D * self.hparams.sequence_length
+        self.tiled_scales = np.tile(scales, [repeat, 1])
+        self.tiled_scales = self.tiled_scales.reshape((self.hparams.sequence_length, batch_size, adim)).transpose([1,0,2])
+
     def get_default_hparams_dict(self):
         """
         Returns:
@@ -143,6 +154,8 @@ class BaseVideoDataset(object):
         dataset = dataset.batch(batch_size)
         iterator = dataset.make_one_shot_iterator()
         state_like_batches, action_like_batches = iterator.get_next()
+        # state_like_batches['states'] = tf.multiply(state_like_batches['states'], self.tiled_scales[:, :, :-1])
+        action_like_batches['actions'] = tf.multiply(action_like_batches['actions'], self.tiled_scales[:, :-1, :])
 
         input_batches = OrderedDict(list(state_like_batches.items()) + list(action_like_batches.items()))
         for input_batch in input_batches.values():
@@ -485,20 +498,21 @@ if __name__ == '__main__':
     from video_prediction import datasets
 
     datasets = [
-        datasets.GoogleRobotVideoDataset('data/push/push_testseen', mode='test'),
-        datasets.SV2PVideoDataset('data/shape', mode='val'),
-        datasets.SV2PVideoDataset('data/humans', mode='val'),
-        datasets.SoftmotionVideoDataset('data/softmotion30_v1', mode='val'),
-        datasets.KTHVideoDataset('data/kth', mode='val'),
-        datasets.UCF101VideoDataset('data/ucf101', mode='val'),
+        # datasets.GoogleRobotVideoDataset('data/push/push_testseen', mode='test'),
+        # datasets.SV2PVideoDataset('data/shape', mode='val'),
+        # datasets.SV2PVideoDataset('data/humans', mode='val'),
+        datasets.SoftmotionVideoDataset('data/bair', mode='val'),
+        # datasets.KTHVideoDataset('data/kth', mode='val'),
+        # datasets.UCF101VideoDataset('data/ucf101', mode='val'),
     ]
-    batch_size = 4
+    batch_size = 16
 
     sess = tf.Session()
 
     for dataset in datasets:
         inputs, _ = dataset.make_batch(batch_size)
         images = inputs['images']
+        import pdb; pdb.set_trace()
         images = tf.reshape(images, [-1] + images.get_shape().as_list()[2:])
         images = sess.run(images)
         images = (images * 255).astype(np.uint8)

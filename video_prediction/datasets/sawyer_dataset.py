@@ -14,6 +14,7 @@ class SawyerVideoDataset(SoftmotionVideoDataset):
             if i==0 or len(self.hparams.image_view) == 1:
                 img_name = 'images'
             img_format = '%d/env/image_view{}/encoded'.format(i), (self.hparams.img_height, self.hparams.img_width, 3)
+            #import pdb; pdb.set_trace()
             self.state_like_names_and_shapes[img_name] = img_format
 
         if self.hparams.use_state:

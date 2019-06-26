@@ -287,6 +287,18 @@ class VideoPredictionModel(BaseVideoPredictionModel):
             self.g_optimizer = None
             self.d_optimizer = None
 
+        if self.hparams.l1_weight:
+            if self.hparams.l1_anneal == 'none':
+                self.l1_weight = tf.constant(self.hparams.l1_weight, tf.float32)
+            elif self.hparams.l1_anneal == 'linear':
+                start_step, end_step = self.hparams.l1_anneal_steps
+                step = tf.clip_by_value(tf.train.get_or_create_global_step(), start_step, end_step)
+                self.l1_weight = self.hparams.l1_weight * tf.to_float(step - start_step) / tf.to_float(end_step - start_step)
+            else:
+                raise NotImplementedError
+        else:
+            self.l1_weight = None
+
         if self.hparams.kl_weight:
             if self.hparams.kl_anneal == 'none':
                 self.kl_weight = tf.constant(self.hparams.kl_weight, tf.float32)
@@ -304,6 +316,24 @@ class VideoPredictionModel(BaseVideoPredictionModel):
                 raise NotImplementedError
         else:
             self.kl_weight = None
+
+        # if self.hparams.zat_kl_weight:
+        #     if self.hparams.kl_anneal == 'none':
+        #         self.zat_kl_weight = tf.constant(self.hparams.zat_kl_weight, tf.float32)
+        #     elif self.hparams.kl_anneal == 'sigmoid':
+        #         k = self.hparams.kl_anneal_k
+        #         if k == -1.0:
+        #             raise ValueError('Invalid kl_anneal_k %d when kl_anneal is sigmoid.' % k)
+        #         iter_num = tf.train.get_or_create_global_step()
+        #         self.zat_kl_weight = self.hparams.zat_kl_weight / (1 + k * tf.exp(-tf.to_float(iter_num) / k))
+        #     elif self.hparams.kl_anneal == 'linear':
+        #         start_step, end_step = self.hparams.kl_anneal_steps
+        #         step = tf.clip_by_value(tf.train.get_or_create_global_step(), start_step, end_step)
+        #         self.zat_kl_weight = self.hparams.zat_kl_weight * tf.to_float(step - start_step) / tf.to_float(end_step - start_step)
+        #     else:
+        #         raise NotImplementedError
+        # else:
+        #     self.zat_kl_weight = None
 
         # member variables that should be set by `self.build_graph`
         # (in addition to the ones in the base class)
@@ -379,10 +409,15 @@ class VideoPredictionModel(BaseVideoPredictionModel):
             gan_feature_cdist_weight=0.0,
             gan_loss_type='LSGAN',
             kl_weight=0.0,
+            zat_kl_weight=0.0,
+            action_weight=0.0,
+            l1_anneal='none',
+            l1_anneal_steps=(0, 20000),
             kl_anneal='linear',
             kl_anneal_k=-1.0,
-            kl_anneal_steps=(50000, 100000),
+            kl_anneal_steps=(5000, 75000),
             z_l1_weight=0.0,
+            zr_l2_weight=1e-6,
         )
         return dict(itertools.chain(default_hparams.items(), hparams.items()))
 
@@ -397,6 +432,7 @@ class VideoPredictionModel(BaseVideoPredictionModel):
 
         with tf.variable_scope(self.generator_scope) as gen_scope:
             gen_images, gen_outputs = self.generator_fn(inputs)
+            # pass
 
         if self.encoder_fn:
             with tf.variable_scope(gen_scope):
@@ -658,7 +694,7 @@ class VideoPredictionModel(BaseVideoPredictionModel):
             target_images = targets
         if hparams.l1_weight:
             gen_l1_loss = vp.losses.l1_loss(gen_images, target_images)
-            gen_losses["gen_l1_loss"] = (gen_l1_loss, hparams.l1_weight)
+            gen_losses["gen_l1_loss"] = (gen_l1_loss, self.l1_weight)
         if hparams.l2_weight:
             gen_l2_loss = vp.losses.l2_loss(gen_images, target_images)
             gen_losses["gen_l2_loss"] = (gen_l2_loss, hparams.l2_weight)
@@ -691,6 +727,11 @@ class VideoPredictionModel(BaseVideoPredictionModel):
             target_states = inputs['states'][hparams.context_frames:]
             gen_state_loss = vp.losses.l2_loss(gen_states, target_states)
             gen_losses["gen_state_loss"] = (gen_state_loss, hparams.state_weight)
+        # if hparams.action_weight:
+        #     gen_actions = outputs['gen_actions']
+        #     target_actions = inputs['actions'][hparams.context_frames-1:][:,:,:-2]
+        #     gen_action_loss = vp.losses.l2_loss(gen_actions, target_actions)
+        #     gen_losses["gen_action_loss"] = (gen_action_loss, hparams.action_weight)
         if hparams.tv_weight:
             gen_flows = outputs.get('gen_flows_enc', outputs['gen_flows'])
             flow_diff1 = gen_flows[..., 1:, :, :, :] - gen_flows[..., :-1, :, :, :]
@@ -764,6 +805,12 @@ class VideoPredictionModel(BaseVideoPredictionModel):
         if hparams.kl_weight:
             gen_kl_loss = vp.losses.kl_loss(outputs['enc_zs_mu'], outputs['enc_zs_log_sigma_sq'])
             gen_losses["gen_kl_loss"] = (gen_kl_loss, self.kl_weight)  # possibly annealed kl_weight
+        # if hparams.zat_kl_weight:
+        #     gen_zat_kl_loss = vp.losses.kl_loss(outputs['zat_mu'], outputs['zat_log_sigma_sq'])
+        #     gen_losses["gen_zat_kl_loss"] = (gen_zat_kl_loss, self.zat_kl_weight)  # possibly annealed kl_weight
+        if hparams.zr_l2_weight:
+            zr_l2_loss = tf.nn.l2_loss(outputs['zrs'])
+            gen_losses["zr_l2_loss"] = (zr_l2_loss, hparams.zr_l2_weight)
         if hparams.z_l1_weight:
             gen_z_l1_loss = vp.losses.l1_loss(outputs['gen_enc_zs_mu'], outputs['gen_zs_random'])
             gen_losses["gen_z_l1_loss"] = (gen_z_l1_loss, hparams.z_l1_weight)

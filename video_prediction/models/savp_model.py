@@ -247,6 +247,11 @@ class DNACell(tf.nn.rnn_cell.RNNCell):
             output_size['transformed_pix_distribs'] = tf.TensorShape([height, width, num_motions, num_masks])
         if 'states' in inputs:
             output_size['gen_states'] = inputs['states'].shape[2:]
+        if 'zrs' in inputs:
+            output_size['zrs'] = 2
+        #     output_size['zat_mu'] = 2
+        #     output_size['zat_log_sigma_sq'] = 2
+        #     output_size['gen_actions'] = 2
         if self.hparams.transformation == 'flow':
             output_size['gen_flows'] = tf.TensorShape([height, width, 2, self.hparams.last_frames * self.hparams.num_transformed_images])
             output_size['gen_flows_rgb'] = tf.TensorShape([height, width, 3, self.hparams.last_frames * self.hparams.num_transformed_images])
@@ -384,13 +389,16 @@ class DNACell(tf.nn.rnn_cell.RNNCell):
 
         state_action = []
         state_action_z = []
+        state_action_zr = []
         if 'actions' in inputs:
             state_action.append(inputs['actions'])
             state_action_z.append(inputs['actions'])
+            state_action_zr.append(inputs['actions'])
         if 'states' in inputs:
             state_action.append(state)
             # don't backpropagate the convnet through the state dynamics
             state_action_z.append(tf.stop_gradient(state))
+            state_action_zr.append(tf.stop_gradient(state))
 
         if 'zs' in inputs:
             if self.hparams.use_rnn_z:
@@ -399,6 +407,9 @@ class DNACell(tf.nn.rnn_cell.RNNCell):
                 state_action_z.append(rnn_z)
             else:
                 state_action_z.append(inputs['zs'])
+
+        if 'zrs' in inputs:
+            state_action_zr.append(inputs['zrs'])
 
         def concat(tensors, axis):
             if len(tensors) == 0:
@@ -409,6 +420,24 @@ class DNACell(tf.nn.rnn_cell.RNNCell):
                 return tf.concat(tensors, axis=axis)
         state_action = concat(state_action, axis=-1)
         state_action_z = concat(state_action_z, axis=-1)
+        state_action_zr = concat(state_action_zr, axis=-1)
+
+        if 'zrs' in inputs:
+            # zr_at = concat([inputs['zrs'], inputs['actions']], axis=-1)
+            zr_at = concat([tf.multiply(inputs['zrs'], inputs['actions'][:, :2]), inputs['actions'][:, -2:]], axis=-1)
+        #     with tf.variable_scope('zat_mu'):
+        #         zat_mu = dense(state_action_zr, self._output_size['zat_mu'])
+
+        #     with tf.variable_scope('zat_log_sigma_sq'):
+        #         zat_log_sigma_sq = dense(state_action_zr, self._output_size['zat_log_sigma_sq'])
+        #         zat_log_sigma_sq = tf.clip_by_value(zat_log_sigma_sq, -10, 10)
+
+        #     eps = tf.random_normal(tf.shape(zat_mu))
+        #     zat = zat_mu + eps * tf.sqrt(tf.exp(zat_log_sigma_sq))
+        #     zr_zat = concat([inputs['zrs'], zat], axis=-1)
+        #     with tf.variable_scope('gen_actions'):
+        #         gen_action = dense(zr_zat, self._output_size['gen_actions'])
+
         if 'actions' in inputs:
             gen_input = tile_concat([image, inputs['actions'][:, None, None, :]], axis=-1)
         else:
@@ -425,7 +454,10 @@ class DNACell(tf.nn.rnn_cell.RNNCell):
                     h = layers[-1][-1]
                     kernel_size = (3, 3)
                 if self.hparams.where_add == 'all' or (self.hparams.where_add == 'input' and i == 0):
-                    h = tile_concat([h, state_action_z[:, None, None, :]], axis=-1)
+                    if 'zrs' in inputs:
+                        h = tile_concat([h, zr_at[:, None, None, :]], axis=-1)
+                    else:
+                        h = tile_concat([h, state_action_z[:, None, None, :]], axis=-1)
                 h = downsample_layer(h, out_channels, kernel_size=kernel_size, strides=(2, 2))
                 h = norm_layer(h)
                 h = tf.nn.relu(h)
@@ -433,7 +465,10 @@ class DNACell(tf.nn.rnn_cell.RNNCell):
                 conv_rnn_state = conv_rnn_states[len(new_conv_rnn_states)]
                 with tf.variable_scope('%s_h%d' % (self.hparams.conv_rnn, i)):
                     if self.hparams.where_add == 'all':
-                        conv_rnn_h = tile_concat([h, state_action_z[:, None, None, :]], axis=-1)
+                        if 'zrs' in inputs:
+                            conv_rnn_h = tile_concat([h, zr_at[:, None, None, :]], axis=-1)
+                        else:
+                            conv_rnn_h = tile_concat([h, state_action_z[:, None, None, :]], axis=-1)
                     else:
                         conv_rnn_h = h
                     conv_rnn_h, conv_rnn_state = self._conv_rnn_func(conv_rnn_h, conv_rnn_state, out_channels)
@@ -448,7 +483,10 @@ class DNACell(tf.nn.rnn_cell.RNNCell):
                 else:
                     h = tf.concat([layers[-1][-1], layers[num_encoder_layers - i - 1][-1]], axis=-1)
                 if self.hparams.where_add == 'all' or (self.hparams.where_add == 'middle' and i == 0):
-                    h = tile_concat([h, state_action_z[:, None, None, :]], axis=-1)
+                    if 'zrs' in inputs:
+                        h = tile_concat([h, zr_at[:, None, None, :]], axis=-1)
+                    else:
+                        h = tile_concat([h, state_action_z[:, None, None, :]], axis=-1)
                 h = upsample_layer(h, out_channels, kernel_size=(3, 3), strides=(2, 2))
                 h = norm_layer(h)
                 h = tf.nn.relu(h)
@@ -456,7 +494,10 @@ class DNACell(tf.nn.rnn_cell.RNNCell):
                 conv_rnn_state = conv_rnn_states[len(new_conv_rnn_states)]
                 with tf.variable_scope('%s_h%d' % (self.hparams.conv_rnn, len(layers))):
                     if self.hparams.where_add == 'all':
-                        conv_rnn_h = tile_concat([h, state_action_z[:, None, None, :]], axis=-1)
+                        if 'zrs' in inputs:
+                            conv_rnn_h = tile_concat([h, zr_at[:, None, None, :]], axis=-1)
+                        else:
+                            conv_rnn_h = tile_concat([h, state_action_z[:, None, None, :]], axis=-1)
                     else:
                         conv_rnn_h = h
                     conv_rnn_h, conv_rnn_state = self._conv_rnn_func(conv_rnn_h, conv_rnn_state, out_channels)
@@ -597,6 +638,11 @@ class DNACell(tf.nn.rnn_cell.RNNCell):
             outputs['transformed_pix_distribs'] = tf.stack(transformed_pix_distribs, axis=-1)
         if 'states' in inputs:
             outputs['gen_states'] = gen_state
+        if 'zrs' in inputs:
+            outputs['zrs'] = inputs['zrs']
+        #     outputs['zat_mu'] = zat_mu
+        #     outputs['zat_log_sigma_sq'] = zat_log_sigma_sq
+        #     outputs['gen_actions'] = gen_action
         if self.hparams.transformation == 'flow':
             outputs['gen_flows'] = flows
             flows_transposed = tf.transpose(flows, [0, 1, 2, 4, 3])
@@ -622,20 +668,71 @@ def generator_fn(inputs, outputs_enc=None, hparams=None):
     batch_size = inputs['images'].shape[1].value
     inputs = {name: tf_utils.maybe_pad_or_slice(input, hparams.sequence_length - 1)
               for name, input in inputs.items()}
-    if hparams.nz:
-        def sample_zs():
-            if outputs_enc is None:
-                zs = tf.random_normal([hparams.sequence_length - 1, batch_size, hparams.nz], 0, 1)
-            else:
-                enc_zs_mu = outputs_enc['enc_zs_mu']
-                enc_zs_log_sigma_sq = outputs_enc['enc_zs_log_sigma_sq']
-                eps = tf.random_normal([hparams.sequence_length - 1, batch_size, hparams.nz], 0, 1)
-                zs = enc_zs_mu + tf.sqrt(tf.exp(enc_zs_log_sigma_sq)) * eps
-            return zs
-        inputs['zs'] = sample_zs()
-    else:
-        if outputs_enc is not None:
-            raise ValueError('outputs_enc has to be None when nz is 0.')
+    # if hparams.nz:
+    #     def sample_zs():
+    #         if outputs_enc is None:
+    #             zs = tf.random_normal([hparams.sequence_length - 1, batch_size, hparams.nz], 0, 1)
+    #         else:
+    #             enc_zs_mu = outputs_enc['enc_zs_mu']
+    #             enc_zs_log_sigma_sq = outputs_enc['enc_zs_log_sigma_sq']
+    #             eps = tf.random_normal([hparams.sequence_length - 1, batch_size, hparams.nz], 0, 1)
+    #             zs = enc_zs_mu + tf.sqrt(tf.exp(enc_zs_log_sigma_sq)) * eps
+    #         return zs
+    #     inputs['zs'] = sample_zs()
+    # else:
+    #     if outputs_enc is not None:
+    #         raise ValueError('outputs_enc has to be None when nz is 0.')
+
+    # Action inference
+    indep_zr = True
+    if indep_zr:
+        D = 2; zr_dim = 2
+        # zrs_mu = [tf.Variable(tf.zeros([zr_dim])) for i in range(D)]
+        # zrs_log_sigma = [tf.Variable(tf.zeros([zr_dim])) for i in range(D)]
+        
+        # zrs_mu_concat = tf.concat([tf.reshape(m, [1, zr_dim]) for m in zrs_mu], axis=0)
+        # tiled_zrs_mu = tf.tile(tf.expand_dims(zrs_mu_concat, 0), [hparams.sequence_length - 1, batch_size // D, 1])
+
+        # zrs_log_sigma_concat = tf.concat([tf.reshape(m, [1, zr_dim]) for m in zrs_log_sigma], axis=0)
+        # tiled_zrs_log_sigma = tf.tile(tf.expand_dims(zrs_log_sigma_concat, 0), [hparams.sequence_length - 1, batch_size // D, 1])
+
+        # eps = tf.random_normal([hparams.sequence_length - 1, batch_size, zr_dim], 0, 1)
+        # zrs = tiled_zrs_mu + tf.exp(tiled_zrs_log_sigma) * eps
+        # inputs['zrs'] = zrs
+
+        zrs = [tf.Variable(tf.zeros([zr_dim])) for i in range(D)]
+        zrs_concat = tf.concat([tf.reshape(m, [1, zr_dim]) for m in zrs], axis=0)
+        tiled_zrs = tf.tile(tf.expand_dims(zrs_concat, 0), [hparams.sequence_length - 1, batch_size // D, 1])
+        inputs['zrs'] = tiled_zrs
+
+    infer_zr = False
+    if infer_zr and hparams.nz:
+        D = 8
+        assert outputs_enc is not None
+        zrs_mu = tf.reshape(outputs_enc['enc_zs_mu'], [-1, D, batch_size // D, hparams.nz])
+        zrs_log_sigma_sq = tf.reshape(outputs_enc['enc_zs_log_sigma_sq'], [-1, D, batch_size // D, hparams.nz])
+        zrs_mu = tf.transpose(zrs_mu, [1, 0, 2, 3])
+        zrs_log_sigma_sq = tf.transpose(zrs_log_sigma_sq, [1, 0, 2, 3])
+
+        zrs_mu = tf.concat([zrs_mu[:, i] for i in range(hparams.sequence_length - 1)], axis=1)
+        zrs_log_sigma_sq = tf.concat([zrs_log_sigma_sq[:, i] for i in range(hparams.sequence_length - 1)], axis=1)
+        
+        def product_of_gaussians(mus, log_sigma_sqs):
+            sigmas = tf.sqrt(tf.exp(log_sigma_sqs))
+            sigmas_squared = tf.square(sigmas)
+            sigmas_squared = tf.clip_by_value(sigmas_squared, 1e-7, 1e7)
+            sigma_squared = 1. / tf.reduce_sum(tf.reciprocal(sigmas_squared), axis=-2)
+            mu = sigma_squared * tf.reduce_sum(mus / sigmas_squared, axis=-2)
+            sigma = tf.sqrt(sigma_squared)
+            return mu, sigma
+        zrs_mu, zrs_sigma = product_of_gaussians(zrs_mu, zrs_log_sigma_sq)
+        tiled_zrs_mu = tf.tile(tf.expand_dims(zrs_mu, 0), [hparams.sequence_length - 1, batch_size // D, 1])
+        tiled_zrs_sigma = tf.tile(tf.expand_dims(zrs_sigma, 0), [hparams.sequence_length - 1, batch_size // D, 1])
+
+        eps = tf.random_normal([hparams.sequence_length - 1, batch_size, hparams.nz], 0, 1)
+        zrs = tiled_zrs_mu + tiled_zrs_sigma * eps
+        inputs['zrs'] = zrs
+
     cell = DNACell(inputs, hparams)
     outputs, _ = tf.nn.dynamic_rnn(cell, inputs, dtype=tf.float32,
                                    swap_memory=False, time_major=True)
